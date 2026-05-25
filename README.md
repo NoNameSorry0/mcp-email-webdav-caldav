@@ -6,6 +6,16 @@ Python MCP server for IMAP/SMTP email, WebDAV, and CalDAV.
 
 Publish the package to PyPI as `mcp-email-webdav-caldav`, then run it without cloning this repository:
 
+For Claude:
+```bash
+claude-glm-5 mcp add --scope user mail-webdav-caldav \
+--env MCP_SERVER_FULL_NAME=personal \
+--env MCP_SERVER_FULL_NAME=Иван Иванов \
+--env MCP_SERVER_EMAIL_ADDRESS=ivan@inbox.ru \
+--env MCP_SERVER_PASSWORD=token \
+-- uvx mcp-email-webdav-caldav
+```
+
 For Codex:
 
 ```toml
