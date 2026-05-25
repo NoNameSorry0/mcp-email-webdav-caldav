@@ -54,21 +54,6 @@ Ready-made examples:
 - [Codex uvx config](examples/codex.uvx.config.toml)
 - [Codex installed-script config](examples/codex.installed.config.toml)
 
-## Run From Source
-
-Use this only while developing locally:
-
-```bash
-cd /Users/maksim.vlasov/GolandProjects/mcp-email-webdav-caldav-python
-PYTHONPATH=src python3 -m mcp_email_webdav_caldav
-```
-
-For an editable local install:
-
-```bash
-python3 -m pip install -e /fullpath/mcp-email-webdav-caldav-python
-```
-
 ## Build And Publish
 
 Build source and wheel distributions:
