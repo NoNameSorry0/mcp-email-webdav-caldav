@@ -242,7 +242,7 @@ def email_account_from_env() -> EmailSettings | None:
     if not full_name and email_address:
         full_name = email_address.split("@", 1)[0]
     account = EmailSettings(
-        account_name=constants.DEFAULT_ACCOUNT_NAME,
+        account_name=constants.EMAIL_ACCOUNT_NAME,
         full_name=full_name,
         email_address=email_address,
         incoming=ServerSettings(

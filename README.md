@@ -1,16 +1,18 @@
 # mcp-email-webdav-caldav
 
-Python MCP server for IMAP/SMTP email, WebDAV, and CalDAV.
+Python MCP server for IMAP/SMTP email, WebDAV, and CalDAV for mail.ru services 
 
 ## Package Run
 
 Publish the package to PyPI as `mcp-email-webdav-caldav`, then run it without cloning this repository:
 
+Get external app password here (choose all protocols)
+https://account.mail.ru/user/2-step-auth/passwords
+
 For Claude:
 ```bash
 claude-glm-5 mcp add --scope user mail-webdav-caldav \
---env MCP_SERVER_FULL_NAME=personal \
---env MCP_SERVER_FULL_NAME=Иван Иванов \
+--env 'MCP_SERVER_FULL_NAME=Иван Иванов' \
 --env MCP_SERVER_EMAIL_ADDRESS=ivan@inbox.ru \
 --env MCP_SERVER_PASSWORD=token \
 -- uvx mcp-email-webdav-caldav
@@ -66,12 +68,6 @@ Publish to PyPI:
 
 ```bash
 uv publish
-```
-
-After publishing a new version, restart Codex so `uvx` creates or refreshes the package environment. To pin a specific version:
-
-```toml
-args = ["mcp-email-webdav-caldav==0.2.0"]
 ```
 
 ## Runtime Environment Variables
