@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-email-webdav-caldav"
+version = "0.2.0"
+description = "Python MCP server for IMAP/SMTP email, WebDAV, and CalDAV"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+authors = [{ name = "MV" }]
+keywords = ["mcp", "imap", "smtp", "email", "webdav", "caldav", "calendar"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/NoNameSorry0/mcp-email-webdav-caldav"
+Repository = "https://github.com/NoNameSorry0/mcp-email-webdav-caldav"
+
+[project.scripts]
+mcp-email-webdav-caldav = "mcp_email_webdav_caldav.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

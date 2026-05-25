@@ -1,0 +1,9 @@
+[mcp_servers.mail-webdav-python]
+command = "uvx"
+args = ["mcp-email-webdav-caldav"]
+enabled = true
+
+[mcp_servers.mail-webdav-python.env]
+MCP_SERVER_FULL_NAME = "Jane Doe"
+MCP_SERVER_EMAIL_ADDRESS = "jane@example.com"
+MCP_SERVER_PASSWORD = "app_password_here"
