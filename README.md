@@ -141,6 +141,8 @@ CalDAV:
 
 `webdav_download_file` and `webdav_upload_file` are disabled by default because they read/write local files. Enable them explicitly in `constants.py`.
 
+Sent email is uploaded to IMAP after SMTP send when `EMAIL_SAVE_TO_SENT` is enabled. Leave `EMAIL_SENT_FOLDER_NAME` empty to auto-detect the IMAP mailbox with the `\Sent` flag, which is the right mode for localized folders such as Mail.ru `Отправленные`. The `send_email` response includes `sent_copy` with the mailbox used for the saved copy.
+
 `caldav_put_event`, `caldav_create_event`, and `caldav_delete_event` are disabled by default because they modify remote calendars. Enable them explicitly in `constants.py`.
 
 `caldav_create_event` accepts attendees as `attendees = ["Name <user@example.com>", "other@example.com"]`. The `participants` field is accepted as an alias. The server writes standard `ORGANIZER` / `ATTENDEE` iCalendar fields. Use `caldav_check_availability` before creating a meeting to check whether the selected calendar has busy items in the requested time range.

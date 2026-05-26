@@ -15,6 +15,9 @@ from typing import Any
 from .config import EmailSettings, add_email_account, find_email_account, load_email_accounts
 
 
+SENT_MAILBOX_NAMES = {"sent", "sent mail", "sent messages", "отправленные"}
+
+
 def list_available_accounts() -> dict[str, Any]:
     return {"result": [account.public() for account in load_email_accounts()]}
 
@@ -83,13 +86,16 @@ def get_emails_content(account_name: str = "", mailbox: str = "", email_ids: lis
     return {"emails": emails}
 
 
-def send_email(**kwargs: Any) -> dict[str, str]:
+def send_email(**kwargs: Any) -> dict[str, Any]:
     account = find_email_account(kwargs.get("account_name", ""))
     raw, recipients = build_message(account, kwargs)
     send_smtp(account, raw, recipients)
+    response: dict[str, Any] = {"result": "Email sent successfully to " + ", ".join(recipients)}
     if account.save_to_sent:
-        save_sent(account, raw)
-    return {"result": "Email sent successfully to " + ", ".join(recipients)}
+        response["sent_copy"] = save_sent(account, raw)
+    else:
+        response["sent_copy"] = {"saved": False, "reason": "save_to_sent is disabled"}
+    return response
 
 
 def delete_emails(account_name: str = "", mailbox: str = "", email_ids: list[str] | None = None) -> dict[str, str]:
@@ -176,6 +182,10 @@ class IMAPClient:
     def resolve_mailbox(self, mailbox: str, prefer_sent: bool = False) -> dict[str, Any]:
         mailbox = (mailbox or "").strip()
         mailboxes = self.list_mailboxes()
+        if prefer_sent and should_auto_resolve_sent(mailbox):
+            sent = find_sent_mailbox(mailboxes)
+            if sent:
+                return sent
         if mailbox:
             for candidate in mailboxes:
                 if candidate["name"] == mailbox or candidate["display_name"] == mailbox:
@@ -184,9 +194,9 @@ class IMAPClient:
                 if candidate["name"].lower() == mailbox.lower() or candidate["display_name"].lower() == mailbox.lower():
                     return candidate
         if prefer_sent:
-            for candidate in mailboxes:
-                if has_flag(candidate["flags"], r"\Sent"):
-                    return candidate
+            sent = find_sent_mailbox(mailboxes)
+            if sent:
+                return sent
         name = mailbox or "INBOX"
         return {"name": name, "display_name": decode_modified_utf7(name), "delimiter": "/", "flags": [], "selectable": True}
 
@@ -215,11 +225,16 @@ class IMAPClient:
                 return item[1]
         raise RuntimeError(f"message {uid} body not found")
 
-    def append(self, mailbox: str, raw: bytes) -> None:
+    def append(self, mailbox: str, raw: bytes) -> dict[str, Any]:
         resolved = self.resolve_mailbox(mailbox, prefer_sent=True)
         status, data = self.client.append(encode_modified_utf7(resolved["name"]), r"(\Seen)", None, raw)
         if status != "OK":
             raise RuntimeError(f"imap APPEND failed: {data!r}")
+        return {
+            "saved": True,
+            "mailbox": resolved["name"],
+            "mailbox_display_name": resolved.get("display_name") or decode_modified_utf7(resolved["name"]),
+        }
 
 
 def imap_connection(account: EmailSettings) -> IMAPClient:
@@ -352,9 +367,9 @@ def send_smtp(account: EmailSettings, raw: bytes, recipients: list[str]) -> None
             smtp.sendmail(account.email_address, recipients, raw)
 
 
-def save_sent(account: EmailSettings, raw: bytes) -> None:
+def save_sent(account: EmailSettings, raw: bytes) -> dict[str, Any]:
     with imap_connection(account) as client:
-        client.append(account.sent_folder_name, raw)
+        return client.append(account.sent_folder_name, raw)
 
 
 def search_criteria(filters: dict[str, Any]) -> list[str]:
@@ -423,9 +438,10 @@ def parse_list_response(raw: bytes | str) -> dict[str, Any] | None:
     name, _ = parse_imap_token(rest.strip())
     if not name:
         return None
+    display_name = decode_modified_utf7(name)
     return {
-        "name": name,
-        "display_name": decode_modified_utf7(name),
+        "name": display_name,
+        "display_name": display_name,
         "delimiter": delimiter,
         "flags": flags,
         "selectable": not has_flag(flags, r"\Noselect"),
@@ -509,6 +525,21 @@ def encode_modified_utf7(value: str) -> str:
 
 def has_flag(flags: list[str], expected: str) -> bool:
     return any(flag.lower() == expected.lower() for flag in flags)
+
+
+def find_sent_mailbox(mailboxes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for candidate in mailboxes:
+        if has_flag(candidate.get("flags", []), r"\Sent"):
+            return candidate
+    for candidate in mailboxes:
+        names = {candidate.get("name", "").lower(), candidate.get("display_name", "").lower()}
+        if names & SENT_MAILBOX_NAMES:
+            return candidate
+    return None
+
+
+def should_auto_resolve_sent(mailbox: str) -> bool:
+    return not mailbox or mailbox.lower() in SENT_MAILBOX_NAMES
 
 
 def ssl_context(verify: bool) -> ssl.SSLContext:
