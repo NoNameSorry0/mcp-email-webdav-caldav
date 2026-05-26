@@ -8,14 +8,18 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parseaddr
 from pathlib import PurePosixPath
 from typing import Any
 
+from . import constants
 from .config import CalDAVSettings, add_caldav_account, caldav_settings_from_dict, find_caldav_account, load_caldav_accounts
 
 
 DAV_NS = "{DAV:}"
 CAL_NS = "{urn:ietf:params:xml:ns:caldav}"
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+DISCOVERY_FALLBACK_CODES = {404, 405, 501}
 
 
 def list_caldav_accounts() -> dict[str, Any]:
@@ -30,7 +34,7 @@ def add_account(caldav: dict[str, Any]) -> dict[str, str]:
 def caldav_list_calendars(account_name: str = "", path: str = "", depth: int = 1) -> dict[str, Any]:
     client = CalDAVClient(find_caldav_account(account_name))
     xml = client.request("PROPFIND", path, headers={"Depth": str(depth)}, data=calendar_propfind_body())
-    calendars = parse_calendar_propfind(xml, client.url(path))
+    calendars = parse_calendar_propfind(xml, client.calendar_url(path))
     return {"calendars": calendars}
 
 
@@ -47,8 +51,47 @@ def caldav_list_events(
         headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
         data=calendar_query_body(start=start, end=end),
     )
-    events = parse_calendar_query(xml, client.url(calendar_path))
+    events = parse_calendar_query(xml, client.calendar_url(calendar_path), root_url=client.calendar_home_url())
     return {"events": events}
+
+
+def caldav_check_availability(
+    account_name: str = "",
+    calendar_path: str = "",
+    start: str = "",
+    end: str = "",
+    use_free_busy: bool = True,
+) -> dict[str, Any]:
+    if not calendar_path:
+        raise ValueError("calendar_path is required")
+    if not start:
+        raise ValueError("start is required")
+    if not end:
+        raise ValueError("end is required")
+
+    client = CalDAVClient(find_caldav_account(account_name))
+    if use_free_busy:
+        try:
+            raw = client.request(
+                "REPORT",
+                calendar_path,
+                headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+                data=free_busy_query_body(start=start, end=end),
+            )
+            busy = parse_free_busy(raw.decode("utf-8", "replace"))
+            return availability_result(calendar_path, start, end, busy, "free_busy_query")
+        except (CalDAVHTTPError, ValueError):
+            pass
+
+    xml = client.request(
+        "REPORT",
+        calendar_path,
+        headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
+        data=calendar_query_body(start=start, end=end),
+    )
+    events = parse_calendar_query(xml, client.calendar_url(calendar_path), root_url=client.calendar_home_url())
+    busy = busy_from_events(events)
+    return availability_result(calendar_path, start, end, busy, "calendar_query")
 
 
 def caldav_get_event(account_name: str = "", path: str = "") -> dict[str, Any]:
@@ -75,6 +118,9 @@ def caldav_create_event(
     end: str = "",
     description: str = "",
     location: str = "",
+    attendees: list[str] | None = None,
+    participants: list[str] | None = None,
+    organizer: str = "",
     uid: str = "",
 ) -> dict[str, str]:
     account = find_caldav_account(account_name)
@@ -88,6 +134,8 @@ def caldav_create_event(
         end=end,
         description=description,
         location=location,
+        attendees=[*(attendees or []), *(participants or [])],
+        organizer=organizer or account.user_name,
     )
     filename = uid if uid.endswith(".ics") else f"{uid}.ics"
     path = join_remote_path(calendar_path, filename)
@@ -107,15 +155,70 @@ class CalDAVClient:
         self.account = account
         self.base_url = account.base_url.rstrip("/") + "/"
         self.context = ssl.create_default_context() if account.verify_ssl else ssl._create_unverified_context()
+        self._calendar_home_url: str | None = None
+        self._principal_url: str | None = None
+        self._discovery_url: str | None = None
 
-    def url(self, path: str = "") -> str:
+    def url(self, path: str = "", base_url: str | None = None) -> str:
         path = (path or "").strip()
         if urllib.parse.urlsplit(path).scheme:
             raise ValueError("path must be relative to the configured CalDAV base_url")
+        base = (base_url or self.base_url).rstrip("/") + "/"
         quoted = "/".join(urllib.parse.quote(part) for part in path.strip("/").split("/") if part)
         if path.endswith("/") and quoted:
             quoted += "/"
-        return urllib.parse.urljoin(self.base_url, quoted)
+        return urllib.parse.urljoin(base, quoted)
+
+    def calendar_url(self, path: str = "") -> str:
+        return self.url(path, base_url=self.calendar_home_url())
+
+    def calendar_home_url(self) -> str:
+        if self._calendar_home_url:
+            return self._calendar_home_url
+        if not constants.CALDAV_USE_WELL_KNOWN_DISCOVERY:
+            self._calendar_home_url = self.base_url
+            return self._calendar_home_url
+        try:
+            self._calendar_home_url = self.discover_calendar_home_url()
+        except CalDAVHTTPError as error:
+            if error.code not in DISCOVERY_FALLBACK_CODES:
+                raise
+            self._calendar_home_url = self.base_url
+        except (ET.ParseError, ValueError):
+            self._calendar_home_url = self.base_url
+        return self._calendar_home_url
+
+    def discover_calendar_home_url(self) -> str:
+        well_known_url = self.origin_url(constants.CALDAV_WELL_KNOWN_PATH)
+        raw, discovery_url = self.request_url(
+            "PROPFIND",
+            well_known_url,
+            headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+            data=current_user_principal_body(),
+        )
+        self._discovery_url = discovery_url
+        principal_href = prop_href(raw, f"{DAV_NS}current-user-principal")
+        if not principal_href:
+            raise ValueError("CalDAV current-user-principal was not found during discovery")
+
+        principal_url = normalize_collection_url(resolve_href(discovery_url, principal_href))
+        self._principal_url = principal_url
+        raw, principal_url = self.request_url(
+            "PROPFIND",
+            principal_url,
+            headers={"Depth": "0", "Content-Type": "application/xml; charset=utf-8"},
+            data=calendar_home_set_body(),
+        )
+        self._principal_url = principal_url
+        home_href = prop_href(raw, f"{CAL_NS}calendar-home-set")
+        if not home_href:
+            return normalize_collection_url(urllib.parse.urljoin(principal_url.rstrip("/") + "/", "calendars/"))
+        return normalize_collection_url(resolve_href(principal_url, home_href))
+
+    def origin_url(self, path: str) -> str:
+        parsed = urllib.parse.urlsplit(self.base_url)
+        origin = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
+        return urllib.parse.urljoin(origin, path.lstrip("/"))
 
     def request(
         self,
@@ -124,20 +227,50 @@ class CalDAVClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> bytes:
-        request = urllib.request.Request(self.url(path), data=data, method=method.upper())
-        for key, value in (headers or {}).items():
-            request.add_header(key, value)
-        if self.account.user_name or self.account.password:
-            token = f"{self.account.user_name}:{self.account.password}".encode("utf-8")
-            request.add_header("Authorization", "Basic " + base64.b64encode(token).decode("ascii"))
-        if data is not None and "Content-Length" not in request.headers:
-            request.add_header("Content-Length", str(len(data)))
-        try:
-            with urllib.request.urlopen(request, context=self.context) as response:
-                return response.read()
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")
-            raise RuntimeError(f"CalDAV {method.upper()} {path!r} failed: HTTP {error.code} {error.reason}: {detail}") from error
+        raw, _ = self.request_url(method, self.calendar_url(path), data=data, headers=headers)
+        return raw
+
+    def request_url(
+        self,
+        method: str,
+        url: str,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        max_redirects: int = 10,
+    ) -> tuple[bytes, str]:
+        method = method.upper()
+        for _ in range(max_redirects + 1):
+            request = urllib.request.Request(url, data=data, method=method)
+            for key, value in (headers or {}).items():
+                request.add_header(key, value)
+            if self.account.user_name or self.account.password:
+                token = f"{self.account.user_name}:{self.account.password}".encode("utf-8")
+                request.add_header("Authorization", "Basic " + base64.b64encode(token).decode("ascii"))
+            if data is not None and "Content-Length" not in request.headers:
+                request.add_header("Content-Length", str(len(data)))
+            try:
+                with urllib.request.urlopen(request, context=self.context) as response:
+                    return response.read(), response.geturl()
+            except urllib.error.HTTPError as error:
+                if error.code in REDIRECT_CODES and error.headers.get("Location"):
+                    error.read()
+                    error.close()
+                    url = urllib.parse.urljoin(url, error.headers["Location"])
+                    continue
+                detail = error.read().decode("utf-8", "replace")
+                error.close()
+                raise CalDAVHTTPError(method, url, error.code, error.reason, detail) from error
+        raise RuntimeError(f"CalDAV {method} {url!r} failed: too many redirects")
+
+
+class CalDAVHTTPError(RuntimeError):
+    def __init__(self, method: str, url: str, code: int, reason: str, detail: str):
+        self.method = method
+        self.url = url
+        self.code = code
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"CalDAV {method} {url!r} failed: HTTP {code} {reason}: {detail}")
 
 
 def ensure_write_enabled(account: CalDAVSettings) -> None:
@@ -156,6 +289,31 @@ def calendar_propfind_body() -> bytes:
     <C:calendar-timezone/>
   </D:prop>
 </D:propfind>"""
+
+
+def current_user_principal_body() -> bytes:
+    return b"""<?xml version="1.0" encoding="utf-8" ?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:current-user-principal/>
+  </D:prop>
+</D:propfind>"""
+
+
+def calendar_home_set_body() -> bytes:
+    return b"""<?xml version="1.0" encoding="utf-8" ?>
+<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <C:calendar-home-set/>
+  </D:prop>
+</D:propfind>"""
+
+
+def free_busy_query_body(start: str = "", end: str = "") -> bytes:
+    return f"""<?xml version="1.0" encoding="utf-8" ?>
+<C:free-busy-query xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <C:time-range start="{xml_escape(caldav_time(start))}" end="{xml_escape(caldav_time(end))}"/>
+</C:free-busy-query>""".encode("utf-8")
 
 
 def calendar_query_body(start: str = "", end: str = "") -> bytes:
@@ -208,10 +366,10 @@ def parse_calendar_propfind(raw: bytes, base_url: str) -> list[dict[str, Any]]:
     return calendars
 
 
-def parse_calendar_query(raw: bytes, base_url: str) -> list[dict[str, Any]]:
+def parse_calendar_query(raw: bytes, base_url: str, root_url: str | None = None) -> list[dict[str, Any]]:
     root = ET.fromstring(raw)
     events = []
-    base_path = urllib.parse.urlsplit(base_url).path.rstrip("/") + "/"
+    base_path = urllib.parse.urlsplit(root_url or base_url).path.rstrip("/") + "/"
     for response in root.findall(f"{DAV_NS}response"):
         href = text_of(response, f"{DAV_NS}href")
         prop = first_prop(response)
@@ -232,8 +390,8 @@ def parse_calendar_query(raw: bytes, base_url: str) -> list[dict[str, Any]]:
     return events
 
 
-def parse_ics_event(ics: str) -> dict[str, str]:
-    fields: dict[str, str] = {}
+def parse_ics_event(ics: str) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
     in_event = False
     for line in unfold_ics(ics):
         upper = line.upper()
@@ -244,10 +402,13 @@ def parse_ics_event(ics: str) -> dict[str, str]:
             break
         if not in_event or ":" not in line:
             continue
-        name, value = line.split(":", 1)
-        name = name.split(";", 1)[0].upper()
-        if name in {"UID", "SUMMARY", "DTSTART", "DTEND", "DESCRIPTION", "LOCATION", "STATUS"}:
+        name, params, value = parse_ics_property(line)
+        if name in {"UID", "SUMMARY", "DTSTART", "DTEND", "DESCRIPTION", "LOCATION", "STATUS", "TRANSP"}:
             fields[name.lower()] = unescape_ics(value)
+        elif name == "ORGANIZER":
+            fields["organizer"] = attendee_value(value, params)
+        elif name == "ATTENDEE":
+            fields.setdefault("attendees", []).append(attendee_value(value, params))
     return fields
 
 
@@ -268,6 +429,8 @@ def build_event_ics(
     end: str,
     description: str = "",
     location: str = "",
+    attendees: list[str] | None = None,
+    organizer: str = "",
 ) -> str:
     if not summary:
         raise ValueError("summary is required")
@@ -286,6 +449,10 @@ def build_event_ics(
     if end:
         lines.append(f"DTEND:{caldav_time(end)}")
     lines.append(f"SUMMARY:{escape_ics(summary)}")
+    if organizer:
+        lines.append(organizer_line(organizer))
+    for attendee in attendees or []:
+        lines.append(attendee_line(attendee))
     if description:
         lines.append(f"DESCRIPTION:{escape_ics(description)}")
     if location:
@@ -306,6 +473,118 @@ def caldav_time(raw: str) -> str:
     if value.tzinfo is None:
         return value.strftime("%Y%m%dT%H%M%S")
     return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def availability_result(calendar_path: str, start: str, end: str, busy: list[dict[str, Any]], source: str) -> dict[str, Any]:
+    return {
+        "available": not busy,
+        "calendar_path": calendar_path,
+        "start": start,
+        "end": end,
+        "source": source,
+        "busy": busy,
+    }
+
+
+def busy_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    busy = []
+    for item in events:
+        event = item.get("event") or {}
+        if str(event.get("status", "")).upper() == "CANCELLED":
+            continue
+        if str(event.get("transp", "")).upper() == "TRANSPARENT":
+            continue
+        busy.append({
+            "path": item.get("path", ""),
+            "uid": event.get("uid", ""),
+            "summary": event.get("summary", ""),
+            "start": event.get("dtstart", ""),
+            "end": event.get("dtend", ""),
+            "status": event.get("status", ""),
+        })
+    return busy
+
+
+def parse_free_busy(ics: str) -> list[dict[str, Any]]:
+    if "BEGIN:VCALENDAR" not in ics.upper():
+        raise ValueError("CalDAV free-busy response is not an iCalendar object")
+    busy = []
+    in_freebusy = False
+    for line in unfold_ics(ics):
+        upper = line.upper()
+        if upper == "BEGIN:VFREEBUSY":
+            in_freebusy = True
+            continue
+        if upper == "END:VFREEBUSY":
+            break
+        if not in_freebusy or ":" not in line:
+            continue
+        name, params, value = parse_ics_property(line)
+        if name != "FREEBUSY":
+            continue
+        fbtype = params.get("FBTYPE", "BUSY")
+        for period in value.split(","):
+            if "/" not in period:
+                continue
+            period_start, period_end = period.split("/", 1)
+            busy.append({"start": period_start, "end": period_end, "type": fbtype})
+    return busy
+
+
+def parse_ics_property(line: str) -> tuple[str, dict[str, str], str]:
+    raw_name, value = line.split(":", 1)
+    parts = raw_name.split(";")
+    name = parts[0].upper()
+    params: dict[str, str] = {}
+    for raw_param in parts[1:]:
+        if "=" not in raw_param:
+            continue
+        key, raw_value = raw_param.split("=", 1)
+        params[key.upper()] = raw_value.strip('"')
+    return name, params, value
+
+
+def organizer_line(organizer: str) -> str:
+    name, email = contact_parts(organizer)
+    params = f";CN={ics_param_value(name)}" if name else ""
+    return f"ORGANIZER{params}:mailto:{email}"
+
+
+def attendee_line(attendee: str) -> str:
+    name, email = contact_parts(attendee)
+    params = ["ROLE=REQ-PARTICIPANT", "PARTSTAT=NEEDS-ACTION", "RSVP=TRUE"]
+    if name:
+        params.insert(0, f"CN={ics_param_value(name)}")
+    return f"ATTENDEE;{';'.join(params)}:mailto:{email}"
+
+
+def attendee_value(value: str, params: dict[str, str]) -> dict[str, Any]:
+    email = value[7:] if value.lower().startswith("mailto:") else value
+    return {
+        "email": email,
+        "name": params.get("CN", ""),
+        "role": params.get("ROLE", ""),
+        "partstat": params.get("PARTSTAT", ""),
+        "rsvp": params.get("RSVP", "").upper() == "TRUE",
+    }
+
+
+def contact_parts(value: str) -> tuple[str, str]:
+    value = str(value or "").strip()
+    name, email = parseaddr(value)
+    if not email:
+        email = value[7:] if value.lower().startswith("mailto:") else value
+        name = ""
+    if not email:
+        raise ValueError("attendee email is required")
+    return name.strip(), email.strip()
+
+
+def ics_param_value(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', r"\"")
+    if any(char in escaped for char in (";", ":", ",")):
+        return f'"{escaped}"'
+    return escaped
 
 
 def supported_components(prop: ET.Element) -> list[str]:
@@ -330,6 +609,29 @@ def text_of(element: ET.Element, path: str) -> str:
     if found is None or found.text is None:
         return ""
     return found.text.strip()
+
+
+def prop_href(raw: bytes, prop_name: str) -> str:
+    root = ET.fromstring(raw)
+    for response in root.findall(f"{DAV_NS}response"):
+        prop = first_prop(response)
+        if prop is None:
+            continue
+        container = prop.find(prop_name)
+        if container is None:
+            continue
+        href = text_of(container, f"{DAV_NS}href")
+        if href:
+            return href
+    return ""
+
+
+def resolve_href(base_url: str, href: str) -> str:
+    return urllib.parse.urljoin(base_url, href)
+
+
+def normalize_collection_url(url: str) -> str:
+    return url.rstrip("/") + "/"
 
 
 def join_remote_path(base: str, name: str) -> str:

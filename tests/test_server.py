@@ -1,5 +1,9 @@
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from mcp_email_webdav_caldav.server import MCPServer
 
@@ -20,10 +24,17 @@ class ServerTest(unittest.TestCase):
         self.assertIn("webdav_put_text", names)
         self.assertIn("caldav_list_calendars", names)
         self.assertIn("caldav_list_events", names)
+        self.assertIn("caldav_check_availability", names)
 
         metadata_tool = next(tool for tool in response["result"]["tools"] if tool["name"] == "list_emails_metadata")
         properties = metadata_tool["inputSchema"]["properties"]
         self.assertIn("all_mailboxes", properties)
+
+        create_event_tool = next(tool for tool in response["result"]["tools"] if tool["name"] == "caldav_create_event")
+        create_properties = create_event_tool["inputSchema"]["properties"]
+        self.assertIn("attendees", create_properties)
+        self.assertIn("participants", create_properties)
+        self.assertIn("organizer", create_properties)
 
     def test_tool_call_returns_text_content(self):
         server = MCPServer()
@@ -33,7 +44,10 @@ class ServerTest(unittest.TestCase):
             "method": "tools/call",
             "params": {"name": "list_available_accounts", "arguments": {}},
         }
-        response = server.handle_line(json.dumps(payload))
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"MCP_EMAIL_WEBDAV_CALDAV_CONFIG_PATH": str(Path(tmp) / "config.json")}
+            with patch.dict(os.environ, env, clear=True):
+                response = server.handle_line(json.dumps(payload))
         text = response["result"]["content"][0]["text"]
         self.assertEqual(json.loads(text), {"result": []})
 

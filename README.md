@@ -9,6 +9,12 @@ Publish the package to PyPI as `mcp-email-webdav-caldav`, then run it without cl
 Get external app password here (choose all protocols)
 https://account.mail.ru/user/2-step-auth/passwords
 
+
+## Update package
+```bash
+uv tool upgrade mcp-email-webdav-caldav
+```
+
 For Claude:
 ```bash
 claude-glm-5 mcp add --scope user mail-webdav-caldav \
@@ -86,7 +92,9 @@ Provider-specific settings live in `src/mcp_email_webdav_caldav/constants.py`:
 
 - Email IMAP/SMTP host, port, SSL, sent-folder, and attachment-download settings.
 - WebDAV account name, base URL, description, SSL verification, download, and upload settings.
-- CalDAV account name, base URL, description, SSL verification, and write settings.
+- CalDAV account name, base URL, well-known discovery, SSL verification, and write settings.
+
+CalDAV uses `/.well-known/caldav` discovery by default. The client follows redirects, reads `current-user-principal`, then reads `calendar-home-set` and performs calendar/event operations relative to that discovered calendar-home URL.
 
 Email, WebDAV, and CalDAV accounts can also be saved to `~/.config/zerolib/mcp_email_webdav_caldav/config.json` via the `add_email_account`, `add_webdav_account`, and `add_caldav_account` tools. Override the file location with `MCP_EMAIL_WEBDAV_CALDAV_CONFIG_PATH`.
 
@@ -123,6 +131,7 @@ CalDAV:
 - `list_caldav_accounts`
 - `caldav_list_calendars`
 - `caldav_list_events`
+- `caldav_check_availability`
 - `caldav_get_event`
 - `caldav_put_event`
 - `caldav_create_event`
@@ -133,6 +142,8 @@ CalDAV:
 `webdav_download_file` and `webdav_upload_file` are disabled by default because they read/write local files. Enable them explicitly in `constants.py`.
 
 `caldav_put_event`, `caldav_create_event`, and `caldav_delete_event` are disabled by default because they modify remote calendars. Enable them explicitly in `constants.py`.
+
+`caldav_create_event` accepts attendees as `attendees = ["Name <user@example.com>", "other@example.com"]`. The `participants` field is accepted as an alias. The server writes standard `ORGANIZER` / `ATTENDEE` iCalendar fields. Use `caldav_check_availability` before creating a meeting to check whether the selected calendar has busy items in the requested time range.
 
 ## Test
 

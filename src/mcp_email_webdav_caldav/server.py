@@ -97,6 +97,7 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         "list_caldav_accounts": lambda **_: caldav_service.list_caldav_accounts(),
         "caldav_list_calendars": caldav_service.caldav_list_calendars,
         "caldav_list_events": caldav_service.caldav_list_events,
+        "caldav_check_availability": caldav_service.caldav_check_availability,
         "caldav_get_event": caldav_service.caldav_get_event,
         "caldav_put_event": caldav_service.caldav_put_event,
         "caldav_create_event": caldav_service.caldav_create_event,
@@ -304,7 +305,7 @@ def tools() -> list[dict[str, Any]]:
             "description": "List CalDAV calendars using PROPFIND.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "path": string_schema("Remote path relative to the CalDAV base URL."),
+                "path": string_schema("Remote path relative to the discovered CalDAV calendar-home URL."),
                 "depth": integer_schema("PROPFIND depth. Usually 1."),
             }, ["account_name"]),
         },
@@ -313,7 +314,7 @@ def tools() -> list[dict[str, Any]]:
             "description": "List CalDAV VEVENT items using calendar-query REPORT.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "calendar_path": string_schema("Calendar collection path relative to the CalDAV base URL."),
+                "calendar_path": string_schema("Calendar collection path returned by caldav_list_calendars, relative to the discovered CalDAV calendar-home URL."),
                 "start": string_schema("Start of time range, RFC3339 or YYYY-MM-DD."),
                 "end": string_schema("End of time range, RFC3339 or YYYY-MM-DD."),
             }, ["account_name", "calendar_path"]),
@@ -323,15 +324,26 @@ def tools() -> list[dict[str, Any]]:
             "description": "Read a CalDAV event .ics resource.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "path": string_schema("Remote .ics path relative to the CalDAV base URL."),
+                "path": string_schema("Remote .ics path relative to the discovered CalDAV calendar-home URL."),
             }, ["account_name", "path"]),
+        },
+        {
+            "name": "caldav_check_availability",
+            "description": "Check whether a CalDAV calendar is busy during a requested time range.",
+            "inputSchema": object_schema({
+                "account_name": string_schema("The configured CalDAV account name."),
+                "calendar_path": string_schema("Calendar collection path returned by caldav_list_calendars, relative to the discovered CalDAV calendar-home URL."),
+                "start": string_schema("Requested start, RFC3339 or YYYY-MM-DD."),
+                "end": string_schema("Requested end, RFC3339 or YYYY-MM-DD."),
+                "use_free_busy": bool_schema("Try CalDAV free-busy-query first, then fall back to calendar-query. Defaults to true."),
+            }, ["account_name", "calendar_path", "start", "end"]),
         },
         {
             "name": "caldav_put_event",
             "description": "Create or replace a CalDAV event from raw ICS when CalDAV writes are enabled.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "path": string_schema("Remote .ics path relative to the CalDAV base URL."),
+                "path": string_schema("Remote .ics path relative to the discovered CalDAV calendar-home URL."),
                 "ics": string_schema("Raw iCalendar data."),
                 "overwrite": bool_schema("Overwrite an existing event. Defaults to true."),
             }, ["account_name", "path", "ics"]),
@@ -341,12 +353,15 @@ def tools() -> list[dict[str, Any]]:
             "description": "Create a simple CalDAV VEVENT when CalDAV writes are enabled.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "calendar_path": string_schema("Calendar collection path relative to the CalDAV base URL."),
+                "calendar_path": string_schema("Calendar collection path returned by caldav_list_calendars, relative to the discovered CalDAV calendar-home URL."),
                 "summary": string_schema("Event title."),
                 "start": string_schema("Event start, RFC3339 datetime or YYYYMMDD all-day date."),
                 "end": string_schema("Event end, RFC3339 datetime or YYYYMMDD all-day date."),
                 "description": string_schema("Event description."),
                 "location": string_schema("Event location."),
+                "attendees": array_string_schema("Attendees as email addresses or 'Name <email>' values."),
+                "participants": array_string_schema("Alias for attendees; participants as email addresses or 'Name <email>' values."),
+                "organizer": string_schema("Organizer as an email address or 'Name <email>'. Defaults to the CalDAV username."),
                 "uid": string_schema("Optional event UID. Generated when omitted."),
             }, ["account_name", "calendar_path", "summary", "start"]),
         },
@@ -355,7 +370,7 @@ def tools() -> list[dict[str, Any]]:
             "description": "Delete a CalDAV event when CalDAV writes are enabled.",
             "inputSchema": object_schema({
                 "account_name": string_schema("The configured CalDAV account name."),
-                "path": string_schema("Remote .ics path relative to the CalDAV base URL."),
+                "path": string_schema("Remote .ics path relative to the discovered CalDAV calendar-home URL."),
             }, ["account_name", "path"]),
         },
     ]
@@ -400,7 +415,7 @@ def webdav_settings_schema() -> dict[str, Any]:
 def caldav_settings_schema() -> dict[str, Any]:
     return object_schema({
         "account_name": string_schema("Account identifier."),
-        "base_url": string_schema("Base CalDAV URL or calendar-home URL."),
+        "base_url": string_schema("Base CalDAV URL. The client discovers the calendar-home URL through /.well-known/caldav when enabled."),
         "user_name": string_schema("CalDAV username."),
         "password": string_schema("CalDAV password or app password."),
         "description": string_schema("Optional account description."),

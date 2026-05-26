@@ -19,7 +19,7 @@ class ConfigEnvTest(unittest.TestCase):
             caldav = caldav_account_from_env()
 
         self.assertIsNotNone(email)
-        self.assertEqual(email.account_name, constants.DEFAULT_ACCOUNT_NAME)
+        self.assertEqual(email.account_name, constants.EMAIL_ACCOUNT_NAME)
         self.assertEqual(email.full_name, "Jane Doe")
         self.assertEqual(email.email_address, "jane@example.com")
         self.assertEqual(email.incoming.user_name, "jane@example.com")
