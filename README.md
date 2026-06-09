@@ -1,3 +1,5 @@
+# Mail (mail.ru) mcp server with IMAP,SMTP, WEBDAV, CALDAV
+
 # mcp-email-webdav-caldav
 
 Python MCP server for IMAP/SMTP email, WebDAV, and CalDAV for mail.ru services 
