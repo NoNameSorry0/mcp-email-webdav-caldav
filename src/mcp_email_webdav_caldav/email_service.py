@@ -139,11 +139,7 @@ def download_attachment(
 class IMAPClient:
     def __init__(self, account: EmailSettings):
         self.account = account
-        context = ssl_context(account.incoming.verify_ssl)
-        if account.incoming.ssl:
-            self.client = imaplib.IMAP4_SSL(account.incoming.host, account.incoming.port, ssl_context=context)
-        else:
-            self.client = imaplib.IMAP4(account.incoming.host, account.incoming.port)
+        self.client = imaplib.IMAP4(account.incoming.host, account.incoming.port)
         self.client.login(account.incoming.user_name, account.incoming.password)
 
     def __enter__(self) -> "IMAPClient":
@@ -354,7 +350,7 @@ def build_message(account: EmailSettings, data: dict[str, Any]) -> tuple[bytes, 
 
 
 def send_smtp(account: EmailSettings, raw: bytes, recipients: list[str]) -> None:
-    context = ssl_context(account.outgoing.verify_ssl)
+    context = ssl_context()
     if account.outgoing.ssl:
         with smtplib.SMTP_SSL(account.outgoing.host, account.outgoing.port, context=context) as smtp:
             smtp.login(account.outgoing.user_name, account.outgoing.password)
@@ -542,9 +538,7 @@ def should_auto_resolve_sent(mailbox: str) -> bool:
     return not mailbox or mailbox.lower() in SENT_MAILBOX_NAMES
 
 
-def ssl_context(verify: bool) -> ssl.SSLContext:
-    if verify:
-        return ssl.create_default_context()
+def ssl_context() -> ssl.SSLContext:
     context = ssl._create_unverified_context()
     return context
 
@@ -575,5 +569,5 @@ def server_from_tool(raw: dict[str, Any]) -> Any:
         port=int(raw["port"]),
         ssl=bool(raw.get("ssl", True)),
         start_ssl=bool(raw.get("start_ssl", False)),
-        verify_ssl=bool(raw.get("verify_ssl", True)),
+        verify_ssl=bool(raw.get("verify_ssl", False)),
     )

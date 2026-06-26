@@ -23,7 +23,7 @@ class ServerSettings:
     port: int
     ssl: bool = True
     start_ssl: bool = False
-    verify_ssl: bool = True
+    verify_ssl: bool = False
 
 
 @dataclass
@@ -56,7 +56,7 @@ class WebDAVSettings:
     user_name: str = ""
     password: str = ""
     description: str = ""
-    verify_ssl: bool = True
+    verify_ssl: bool = False
     enable_file_download: bool = False
     enable_file_upload: bool = False
     created_at: str = field(default_factory=utc_now)
@@ -79,7 +79,7 @@ class CalDAVSettings:
     user_name: str = ""
     password: str = ""
     description: str = ""
-    verify_ssl: bool = True
+    verify_ssl: bool = False
     enable_write: bool = False
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -335,7 +335,7 @@ def server_settings_from_dict(raw: dict[str, Any]) -> ServerSettings:
         port=int(raw.get("port") or 0),
         ssl=bool(raw.get("ssl", True)),
         start_ssl=bool(raw.get("start_ssl", False)),
-        verify_ssl=bool(raw.get("verify_ssl", True)),
+        verify_ssl=bool(raw.get("verify_ssl", False)),
     )
 
 
@@ -346,7 +346,7 @@ def webdav_settings_from_dict(raw: dict[str, Any]) -> WebDAVSettings:
         user_name=raw.get("user_name", ""),
         password=raw.get("password", ""),
         description=raw.get("description", ""),
-        verify_ssl=bool(raw.get("verify_ssl", True)),
+        verify_ssl=bool(raw.get("verify_ssl", False)),
         enable_file_download=bool(raw.get("enable_file_download", False)),
         enable_file_upload=bool(raw.get("enable_file_upload", False)),
         created_at=raw.get("created_at") or utc_now(),
@@ -363,7 +363,7 @@ def caldav_settings_from_dict(raw: dict[str, Any]) -> CalDAVSettings:
         user_name=raw.get("user_name", ""),
         password=raw.get("password", ""),
         description=raw.get("description", ""),
-        verify_ssl=bool(raw.get("verify_ssl", True)),
+        verify_ssl=bool(raw.get("verify_ssl", False)),
         enable_write=bool(raw.get("enable_write", False)),
         created_at=raw.get("created_at") or utc_now(),
         updated_at=raw.get("updated_at") or raw.get("created_at") or utc_now(),
